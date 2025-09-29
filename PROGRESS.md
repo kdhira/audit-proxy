@@ -1,0 +1,57 @@
+# Progress Log
+
+## 2025-09-29
+- Read SPEC_PLAN.md and README.md to understand requirements and project context.
+- Preparing implementation plan for initial application skeleton.
+- Created initial project directory structure for core components (cmd, internal packages).
+- Implemented config parsing helper, file-based JSONL logger, and proxy handler scaffolding.
+- Drafted initial HTTP/CONNECT forwarding logic and placeholder filter chain.
+- Added basic profile registry with generic/openai stubs and wired into proxy logging.
+- Ran gofmt across modules to keep formatting consistent.
+- Rewrote README to reflect current MVP capabilities, CLI flags, and roadmap.
+- Executed `go test ./...` and validated CLI help output via `go run ./cmd/audit-proxy --help`.
+- Added `scripts/smoke_proxy.sh` to stage a repeatable curl-based smoke test prior to running it live.
+- Preparing to execute updated smoke script to verify proxy pass-through behaviour end-to-end.
+- Ran smoke script (cURL via httpbin) — request succeeded and proxy shut down cleanly; noted Go mod cache warning due to sandbox permissions but no runtime impact.
+- Discovered `logs/smoke.jsonl` remains empty; likely due to smoke script running proxy in background and terminating before log flush.
+- Plan: replace shell-based smoke with Go harness (no background processes), re-run to confirm logs, and expand coverage for CONNECT metadata.
+- Added `cmd/smokecheck` integration runner and updated shell script to invoke it without backgrounding; ready to re-run smoke validation.
+- Executed new smoke harness; verified `logs/smoke.jsonl` now contains HTTP + CONNECT entries, confirming logging path works end-to-end.
+- Added unit tests for header redaction and config parsing defaults/validation to solidify foundation.
+- Expanded filter scaffold into composable chain with header-based block filter plus tests; proxy now enforces simple policy hook.
+- Updated README with filter details and smoke harness instructions so contributors can validate behaviour easily.
+- `go test ./...` succeeds with new unit coverage.
+- Implemented OpenAI profile attribute extraction (endpoint, stream hint, masked org/project, response timing) and added tests.
+- Next: plan MITM/streaming design for v0.2 and start drafting logger teeing approach.
+- Starting v0.2 groundwork: outline MITM subsystem, streaming capture primitives, and associated docs.
+- Added `internal/mitm.Manager` skeleton (loads CA, tracks enablement) and wired into proxy handler for future intercept work.
+- Implemented streaming tee utilities (`LimitedBuffer`, `TeeReadCloser`) with unit tests to prepare for body capture.
+- Updated README to reflect MITM scaffolding status and new streaming utilities.
+- `go test ./...` passing including new MITM/stream components.
+- Next focus: flesh out MITM interception flow (per-host cert / CONNECT handling) and start integrating streaming tees into proxy pipeline.
+- Implemented per-host certificate issuer and unit tests; MITM manager now exposes Issuer for future CONNECT interception.
+- Integrated streaming tee into HTTP request/response paths capturing truncated excerpts; smoke log shows response_excerpt snippet.
+- MITM CONNECT flow now terminates TLS, forwards decrypted HTTP through transport, captures excerpts, and logs `mitm=enabled` metadata.
+- Next: expand configuration knobs (body excerpt limits, MITM toggle clarifications) and consider integration tests for decrypted paths.
+- README updated with MITM interception guidance and excerpt behaviour.
+- Next focus: surface config knobs for excerpt limits/MITM control and build automated MITM integration harness.
+- Added CLI flags for excerpt limit and MITM disable list; handler respects limit and host overrides.
+- Added automated MITM integration test harness covering TLS interception end-to-end.
+- Implemented MITM leaf cert caching (6h TTL) and buffer pooling for body excerpts to reduce overhead.
+- Next: add config file loader with filter/profile definitions per SPEC, merging with existing CLI flags.
+- Added YAML/JSON config loader (`--config`) with tests; CLI and file values merge, preserving validation.
+- Filter chain now configurable via file specs (header-block supported); README documents sample config file.
+- Next: wire profile-specific options from config into OpenAI profile and broaden filter registry per SPEC.
+- Immediate focus: map profile config (e.g., OpenAI redact toggles) and add more filter types for config-driven setup.
+- Connected profile config through registry/OpenAI profile, added path-prefix filter support, and documented profiles_config usage.
+- `go test ./...` passes after config-driven profile/filter updates.
+- Next: honor redact settings during logging when bodies are available, and tighten config validation messages.
+- Applied profile-driven redaction (OpenAI `redact_system_prompt`) to request excerpts, added path-prefix filters + validation, and documented behaviour.
+- `go test ./...` remains green with config validation and redaction updates.
+- Next: tighten config validation error messages and add allowlist filter type per SPEC roadmap.
+- Added stricter config validation (filters/profile configs) with clearer errors and introduced path-prefix allowlist filter.
+- Next: prototype body redaction using profile config (OpenAI system prompt) and add config validation-only mode.
+- Config validation enhanced for filters and allowlist filter documented.
+- Added `--validate-config` CLI toggle for validation-only runs.
+- Reverted system prompt redaction feature to ensure request excerpts remain intact per updated requirements; removed related docs/tests.
+- `go test ./...` green after adjustments.

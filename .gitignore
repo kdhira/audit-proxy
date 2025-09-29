@@ -1,0 +1,31 @@
+# Binaries
+/audit-proxy
+
+# Logs
+/logs/*.jsonl
+!logs/.gitkeep
+
+# Go build artifacts
+/bin/
+/build/
+*.exe
+*.dll
+*.so
+*.test
+*.out
+
+# Temporary files and editor cruft
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Coverage / profiling
+*.coverprofile
+*.cov
+
+# Generated configs/certs (placeholder exceptions allowed)
+certs/
+!certs/README.md

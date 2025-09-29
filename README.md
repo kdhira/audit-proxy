@@ -1,259 +1,177 @@
 # audit-proxy
 
-audit-proxy is a transparent HTTP/HTTPS proxy designed to audit, filter, and observe network traffic with a focus on security, privacy, and compliance. It acts as a man-in-the-middle (MITM) proxy, allowing inspection and modification of requests and responses in real-time.
+audit-proxy is a forward HTTP(S) proxy built for observability and policy enforcement of outbound API calls. The initial implementation focuses on transparent pass-through with structured JSON logs so teams can inspect traffic without modifying clients.
 
 ---
 
-## Features
+## Status
 
-- Transparent HTTP and HTTPS proxy with MITM capabilities
-- Flexible configuration via JSON profiles and YAML filters
-- Built-in filters for auditing, redacting sensitive data, and enforcing policies
-- Observability hooks for logging and metrics
-- Support for OpenAI API auditing and filtering
-- Extensible middleware architecture
-- Detailed logging with structured JSON output for easy analysis
-- Lightweight and performant with minimal dependencies
+- **Version:** v0.1 (MVP skeleton)
+- **Highlights:**
+  - HTTP proxy handler with `CONNECT` tunneling
+  - JSON Lines file logger with basic header redaction
+  - CLI configuration via flags (`--addr`, `--log-file`, `--profiles`, etc.)
+  - Profile registry with `generic` (always matches) and `openai` (hostname matcher with endpoint metadata)
+  - Pluggable filter chain with a default header-block policy hook
+  - MITM manager scaffolding that loads CA material (interception planned for v0.2)
+  - Streaming tee utilities and smoke harness (`cmd/smokecheck`) for repeatable verification
+
+Features such as active MITM interception, body capture, rich filtering, and UI tooling are planned but not yet implemented.
 
 ---
 
 ## Quick Start
 
-1. **Install**
+```bash
+go build ./cmd/audit-proxy
+./audit-proxy --addr 127.0.0.1:8080 --log-file logs/audit.jsonl --profiles generic,openai
+```
 
-   Download the latest release from the [GitHub releases page](https://github.com/kdhira/audit-proxy/releases).
+Point your tooling at the proxy:
 
-2. **Run**
+```bash
+export HTTPS_PROXY=http://127.0.0.1:8080
+# Run your client commands as normal
+```
 
-   ```bash
-   ./audit-proxy --config config.json
-   ```
-
-3. **Configure**
-
-   Edit `config.json` to specify proxy ports, profiles, and filters.
-
-4. **Set your system or application to use the proxy**
-
-   Configure your HTTP/HTTPS client or system proxy settings to point to `localhost:<proxy-port>`.
+Stop with `Ctrl+C`. Graceful shutdown waits up to 10 seconds for active connections to drain.
 
 ---
 
-## MITM Mode
+## Configuration Flags
 
-audit-proxy supports man-in-the-middle mode for HTTPS traffic by generating certificates on the fly. To enable MITM:
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--addr` | `127.0.0.1:8080` | Listen address for the proxy. |
+| `--log-file` | `logs/audit.jsonl` | Path to JSONL log file. Use `-` for stdout. |
+| `--profiles` | `generic` | Comma-separated list of profile names to enable. |
+| `--allow-hosts` | `*` | Comma-separated allowlist of upstream hosts (`*` permits all). |
+| `--excerpt-limit` | `4096` | Maximum bytes captured for request/response excerpts (set `0` to disable body snippets). |
+| `--mitm` | `false` | Enable CONNECT interception using supplied CA material. |
+| `--mitm-ca`, `--mitm-key` | `` | Paths to MITM root certificate and key (required when `--mitm` is set). |
+| `--mitm-disable-hosts` | `` | Comma-separated hosts that should never be intercepted even if MITM is enabled. |
+| `--config` | `` | Optional path to YAML/JSON config file (values merge with CLI flags). |
+| `--validate-config` | `false` | If set, validates configuration (including `--config`) and exits. |
 
-1. Generate a root CA certificate:
+Invalid flag combinations cause startup to fail with a descriptive message.
 
-   ```bash
-   ./audit-proxy --gen-ca > rootCA.pem
-   ```
-
-2. Install `rootCA.pem` in your system or browser trusted certificate store.
-
-3. Enable MITM in your config:
-
-   ```json
-   {
-     "mitm": true,
-     "ca_cert_path": "rootCA.pem",
-     "ca_key_path": "rootCA.key"
-   }
-   ```
-
-This allows audit-proxy to decrypt and inspect HTTPS traffic securely.
+> **Note:** Enabling `--mitm` today only validates and loads the CA material; TLS interception and body capture will ship in v0.2.
 
 ---
 
-## Configuration
+## Logging
 
-audit-proxy uses a JSON configuration file to define:
-
-- Proxy listening ports
-- Profiles that define behavior and filters
-- Logging options
-- MITM settings
-
-Example snippet:
+Each proxied request produces a single JSON entry:
 
 ```json
 {
-  "proxy_port": 8080,
-  "mitm": true,
-  "profiles": {
-    "default": {
-      "filters": ["audit", "redact"],
-      "logging": {
-        "level": "info",
-        "format": "json"
-      }
-    }
-  }
+  "time": "2025-09-29T08:00:00Z",
+  "id": "req-42",
+  "conn": {
+    "client_addr": "127.0.0.1",
+    "target": "api.openai.com:443",
+    "protocol": "https"
+  },
+  "request": {
+    "method": "POST",
+    "url": "https://api.openai.com/v1/responses",
+    "headers": {
+      "Authorization": "Bearer sk***23",
+      "Content-Type": "application/json"
+    },
+    "content_length": 512
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "content_length": 2048
+  },
+  "latency_ms": 420,
+  "profile": "openai"
 }
 ```
+
+Sensitive headers (e.g., `Authorization`) are partially redacted before logging. When available, the proxy stores short `request_excerpt` / `response_excerpt` values (truncated according to `--excerpt-limit`) to aid debugging; buffers are pooled to keep the overhead low during streaming workloads.
 
 ---
 
-## Logging Schema
+## MITM Interception (Experimental)
 
-Logs are emitted in structured JSON format with the following fields:
+Starting the proxy with `--mitm --mitm-ca <path> --mitm-key <path>` enables CONNECT interception:
 
-- `timestamp`: ISO8601 timestamp of the event
-- `level`: log level (info, warn, error, debug)
-- `event`: event type (request, response, error, audit)
-- `request_id`: unique ID per request
-- `method`: HTTP method
-- `url`: request URL
-- `status`: HTTP status code (for responses)
-- `duration_ms`: time taken to process request
-- `message`: human-readable message
-- `details`: additional metadata (headers, audit findings)
+- Per-host leaf certificates are minted from the supplied root CA.
+- Certificates are cached for several hours to avoid regeneration on every CONNECT; restart to rotate early.
+- TLS sessions are terminated inside the proxy, decrypted HTTP requests are forwarded using the existing transport, and body excerpts are captured.
+- Audit entries include `"mitm":"enabled"` along with the usual profile metadata and excerpts.
 
-Example log entry:
-
-```json
-{
-  "timestamp": "2024-06-01T12:00:00Z",
-  "level": "info",
-  "event": "request",
-  "request_id": "abc123",
-  "method": "POST",
-  "url": "https://api.openai.com/v1/chat/completions",
-  "message": "Request received"
-}
-```
+This feature is an early milestone for v0.2. It currently focuses on HTTP/1.1 CONNECT tunnels and short excerpt capture; additional hardening (certificate caching, streaming optimisations, config knobs) is forthcoming.
 
 ---
 
 ## Profiles
 
-Profiles define sets of filters and behaviors for different use cases.
+Profiles add domain-specific awareness to log entries.
 
-### OpenAI Profile
+- `generic`: Always matches; emits no extra attributes.
+- `openai`: Matches hosts containing `openai`; currently a stub for future annotations.
 
-The OpenAI profile is tailored for auditing and filtering OpenAI API requests and responses.
-
-Features:
-
-- Detects sensitive data in prompts and completions
-- Redacts API keys and tokens
-- Enforces usage policies
-- Logs audit events with context
-
-Example:
-
-```json
-{
-  "profiles": {
-    "openai": {
-      "filters": ["openai-audit", "redact-api-keys"],
-      "logging": {
-        "level": "debug"
-      }
-    }
-  }
-}
-```
+The proxy activates the first matching profile per request and records its name in the log entry. Future versions will enrich `attributes` with structured metadata.
+Current OpenAI logs include endpoint, inferred operation, stream hints, masked organization/project identifiers, and response processing timing when available.
 
 ---
 
-## Filters (Middleware)
+## Roadmap (High-Level)
 
-Filters are pluggable middleware components that inspect and modify traffic.
+1. MITM mode with per-host certificates and streaming-safe body capture.
+2. Rich filter middleware with declarative policies and redaction helpers.
+3. Profile enrichments for OpenAI endpoints and other SaaS APIs.
+4. CLI/TUI log viewer with filtering and follow capabilities.
+5. Pluggable storage backends (SQLite, S3) and metrics exporters.
 
-Common filters included:
-
-- **audit**: Logs request and response metadata
-- **redact**: Removes or masks sensitive headers and payload fields
-- **openai-audit**: Specific auditing for OpenAI API traffic
-- **rate-limit**: Enforces request rate limits per client
-- **cors**: Adds or modifies CORS headers
-
-Filters can be chained in profiles to customize behavior.
+See `SPEC_PLAN.md` for full architectural notes.
 
 ---
 
-## Observability
-
-audit-proxy exposes metrics and events to facilitate monitoring:
-
-- **Metrics**: HTTP request counts, latencies, error rates
-- **Events**: Audit findings, filter actions, security alerts
-- **Logging**: Structured logs for integration with ELK, Splunk, or other systems
-
-Metrics can be exposed via Prometheus endpoints if enabled in config.
-
----
-
-## Development Guide
-
-### Layout
-
-- `cmd/` - main application entrypoint
-- `pkg/` - core proxy and filter implementations
-- `configs/` - example configuration files
-- `tests/` - integration and unit tests
-
-### Running Locally
-
-Build and run:
-
-```bash
-go build -o audit-proxy ./cmd/audit-proxy
-./audit-proxy --config configs/default.json
-```
-
-### Tests
-
-Run tests with:
+## Development
 
 ```bash
 go test ./...
 ```
 
-Integration tests require Docker for simulating proxy traffic.
+The codebase targets Go 1.25+. Please run `go fmt ./...` before sending patches.
 
-### Code Style
+### Configuration File
 
-- Follow Go idioms and formatting (`gofmt`)
-- Use descriptive variable names and comments
-- Maintain modular filter implementations
+Instead of passing many flags, you can supply a YAML/JSON file with `--config`:
 
----
+```yaml
+addr: 0.0.0.0:8080
+log_file: logs/audit.jsonl
+profiles: [generic, openai]
+excerpt_limit: 2048
+mitm: true
+mitm_ca: certs/ca.pem
+mitm_key: certs/ca.key
+mitm_disable_hosts: [api.openai.com]
+filters:
+  - type: header-block
+    header: X-Audit-Block
+    values: ["1", "true", "block"]
+  - type: path-prefix-allow
+    values: ["/public", "/status"]
+```
 
-## Security Notes
+CLI flags still take precedence for any values you provide explicitly.
 
-- MITM requires installing a trusted root CA; keep private keys secure
-- Audit logs may contain sensitive data; secure log storage is recommended
-- Filters should be reviewed for performance and security impact
-- Regularly update audit-proxy to incorporate security patches
+### Smoke Test
 
----
+Run the scripted smoke probe to exercise HTTP and CONNECT flows without background processes:
 
-## Roadmap
+```bash
+./scripts/smoke_proxy.sh
+cat logs/smoke.jsonl
+```
 
-- Add support for WebSocket proxying and auditing
-- Enhance filter DSL for custom user-defined rules
-- Integrate with SIEM systems for real-time alerts
-- Provide GUI for configuration and monitoring
-- Support additional protocols beyond HTTP(S)
-
----
-
-## FAQ
-
-**Q: Can audit-proxy handle HTTP/2 traffic?**  
-A: Yes, audit-proxy supports HTTP/2 proxying and MITM inspection.
-
-**Q: How do I add custom filters?**  
-A: Implement the filter interface in Go and register it in the configuration.
-
-**Q: Is audit-proxy suitable for production use?**  
-A: audit-proxy is designed for both development and production environments but should be tested and configured according to your security requirements.
-
-**Q: How do I troubleshoot certificate errors in MITM mode?**  
-A: Ensure the root CA certificate is correctly installed and trusted on the client device or browser.
-
----
-
-For more information, please visit the [GitHub repository](https://github.com/kdhira/audit-proxy).
+The log will contain two entries: one for a proxied HTTP request and one for the CONNECT tunnel established for HTTPS.
